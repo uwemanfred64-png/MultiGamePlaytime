@@ -2,7 +2,7 @@
  * @name MultiGamePlaytime
  * @author uwemanfred64-png
  * @description Lets Discord see several games from its own game list running at the same time, so your playtime and the number of games you played grow for the Game Time and Game Variety badges. Rotates through your lists, lets you edit the minutes of every game, adds games from your friends' profiles, pauses while you really play, follows a schedule, shows game icons and statistics, tells you about updates, comes in 30 languages and never asks for your account token. No library needed.
- * @version 1.4.0
+ * @version 1.4.1
  * @source https://github.com/uwemanfred64-png/MultiGamePlaytime
  * @website https://github.com/uwemanfred64-png/MultiGamePlaytime
  * @updateUrl https://raw.githubusercontent.com/uwemanfred64-png/MultiGamePlaytime/main/MultiGamePlaytime.plugin.js
@@ -40,7 +40,8 @@ const UPDATE_DELAY = 10000;
 const UPDATE_INTERVAL = 6 * 60 * MINUTE;
 const FILE_NAME = "MultiGamePlaytime.plugin.js";
 const CHANGELOG = [
-    { title: "New", type: "added", items: ["This window shows up after every update", "Notice with an Update button when a new version is out, can be turned off in the settings"] },
+    { title: "Fixed", type: "fixed", items: ["Loading data from GitHub failed"] },
+    { title: "New in 1.4", type: "added", items: ["This window shows up after every update", "Notice with an Update button when a new version is out, can be turned off in the settings"] },
 ];
 
 const defaults = { language: "auto", active: false, showPlaying: true, atOnce: 0, rotate: 0, pauseOnReal: true, featured: "", scheduleFrom: -1, scheduleTo: -1, panelButton: true, checkUpdates: true, list: MAIN_LIST };
@@ -317,7 +318,7 @@ module.exports = class MultiGamePlaytime {
     }
 
     async loadReleases() {
-        const response = await this.api.Net.fetch(RELEASES_URL);
+        const response = await this.api.Net.fetch(RELEASES_URL, { headers: { "User-Agent": "MultiGamePlaytime", Accept: "application/vnd.github+json" } });
         if (!response.ok) throw new Error(String(response.status));
         const list = await response.json();
         return (Array.isArray(list) ? list : []).map(r => ({
