@@ -1,8 +1,8 @@
 /**
  * @name MultiGamePlaytime
  * @author uwemanfred64-png
- * @description Lets Discord see several games from its own game list running at the same time, so your playtime and the number of games you played grow for the Game Time and Game Variety badges. Rotates through your list, shows statistics and never asks for your account token. No library needed.
- * @version 1.0.0
+ * @description Lets Discord see several games from its own game list running at the same time, so your playtime and the number of games you played grow for the Game Time and Game Variety badges. Rotates through your list, lets you edit the minutes of every game, shows statistics and never asks for your account token. No library needed.
+ * @version 1.2.0
  * @source https://github.com/uwemanfred64-png/MultiGamePlaytime
  * @website https://github.com/uwemanfred64-png/MultiGamePlaytime
  * @updateUrl https://raw.githubusercontent.com/uwemanfred64-png/MultiGamePlaytime/main/MultiGamePlaytime.plugin.js
@@ -20,6 +20,12 @@ const RANDOM_BATCH = 25;
 const PID_MIN = 20000;
 const PID_RANGE = 40000;
 const PLAYED_SECONDS = 60;
+const MAX_MINUTES = 9999999;
+const HEARTBEAT = "running_game_heartbeat";
+const GTA_V_ID = "1402418714716143646";
+const EXTRA_GAMES = [{ id: GTA_V_ID, name: "FiveM", exe: "grand theft auto v/fivem.exe", detected: true }];
+const SHORTCUTS = { gta: ["grand", "theft", "auto"], rdr: ["red", "dead", "redemption"], cs: ["counter", "strike"], cod: ["call", "of", "duty"], lol: ["league", "of", "legends"] };
+const ROMAN = ["", "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii", "xiii", "xiv", "xv", "xvi", "xvii", "xviii", "xix", "xx"];
 
 const defaults = { language: "auto", active: false, showPlaying: true, atOnce: 0, rotate: 0 };
 
@@ -33,8 +39,20 @@ function duration(seconds, t) {
 }
 
 function toGame(entry) {
+    if (!entry?.id || !entry.name) return null;
     const exe = (entry.executables ?? []).find(e => e.os === "win32" && !e.is_launcher)?.name;
-    return entry.id && entry.name && exe ? { id: String(entry.id), name: entry.name, exe: exe.replace(/^>/, "") } : null;
+    const fallback = `${entry.name.toLowerCase().replace(/[^a-z0-9]+/g, "") || entry.id}.exe`;
+    return { id: String(entry.id), name: entry.name, exe: (exe ?? fallback).replace(/^>/, ""), detected: !!exe };
+}
+
+function searchWords(query) {
+    return query.toLowerCase().split(/[\s:\-]+/).filter(Boolean).flatMap(w => SHORTCUTS[w] ?? [w]);
+}
+
+function matchesWord(name, tokens, word) {
+    if (name.includes(word)) return true;
+    const number = Number(word);
+    return Number.isInteger(number) && number > 0 && number < ROMAN.length && tokens.includes(ROMAN[number]);
 }
 
 module.exports = class MultiGamePlaytime {
@@ -55,6 +73,7 @@ module.exports = class MultiGamePlaytime {
         const { Webpack, Data, DOM, Patcher } = this.api;
         this.stores = { RunningGame: Webpack.getStore("RunningGameStore"), Locale: Webpack.getStore("LocaleStore") };
         this.dispatcher = Webpack.getByKeys("dispatch", "subscribe", "register", { searchExports: true });
+        this.analytics = Webpack.getByKeys("track", "setSystemAccessibilityFeatures", "expandEventProperties");
         if (!this.stores.RunningGame?.getRunningGames || !this.dispatcher) {
             this.api.UI.showToast(`${this.api.name ?? "MultiGamePlaytime"}: Discord's game detection was not found. It only exists in the desktop app.`, { type: "error" });
             this.stores = null;
@@ -131,7 +150,7 @@ module.exports = class MultiGamePlaytime {
             pidPath: [pid],
             hidden: false,
             isLauncher: false,
-            start: Date.now(),
+            start: Date.now() - (this.stats.seconds[game.id] || 0) * 1000,
         };
     }
 
@@ -207,6 +226,7 @@ module.exports = class MultiGamePlaytime {
                     if (!response.ok) continue;
                     const list = await response.json();
                     const games = (Array.isArray(list) ? list : []).map(toGame).filter(Boolean);
+                    if (games.length) games.unshift(...EXTRA_GAMES.filter(extra => games.some(g => g.id === extra.id)));
                     if (games.length) {
                         this.database = games;
                         return games;
@@ -225,22 +245,24 @@ module.exports = class MultiGamePlaytime {
     }
 
     search(query) {
-        const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+        const words = searchWords(query);
         if (!words.length || !this.database) return [];
         const owned = new Set(this.games.map(g => g.id));
         const hits = [];
         for (const game of this.database) {
+            if (owned.has(game.id)) continue;
             const name = game.name.toLowerCase();
-            if (!owned.has(game.id) && words.every(w => name.includes(w))) hits.push(game);
-            if (hits.length >= SEARCH_RESULTS * 5) break;
+            const tokens = name.split(/[^a-z0-9]+/);
+            if (words.every(w => matchesWord(name, tokens, w))) hits.push(game);
         }
         const q = words.join(" ");
-        return hits.sort((a, b) => Number(!a.name.toLowerCase().startsWith(q)) - Number(!b.name.toLowerCase().startsWith(q)) || a.name.length - b.name.length).slice(0, SEARCH_RESULTS);
+        const rank = game => (game.name.toLowerCase() === q ? 0 : game.name.toLowerCase().startsWith(q) ? 1 : 2) + (game.detected ? 0 : 3);
+        return hits.sort((a, b) => rank(a) - rank(b) || a.name.length - b.name.length).slice(0, SEARCH_RESULTS);
     }
 
     randomGames(count) {
         const owned = new Set(this.games.map(g => g.id));
-        const pool = (this.database ?? []).filter(g => !owned.has(g.id));
+        const pool = (this.database ?? []).filter(g => g.detected && !owned.has(g.id));
         const picked = [];
         while (picked.length < count && pool.length) picked.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
         return picked;
@@ -271,6 +293,46 @@ module.exports = class MultiGamePlaytime {
         return { seconds: values.reduce((a, b) => a + b, 0), played: values.filter(s => s >= PLAYED_SECONDS).length };
     }
 
+    minutes(id) {
+        return Math.floor((this.stats.seconds[id] || 0) / 60);
+    }
+
+    setMinutes(id, value) {
+        const t = this.t;
+        const game = this.games.find(g => g.id === id);
+        const wanted = Math.floor(Number(value));
+        if (!game || !Number.isFinite(wanted) || wanted < 0) return;
+        const minutes = Math.min(wanted, MAX_MINUTES);
+        const added = minutes - this.minutes(id);
+        if (!added) return;
+
+        if (added > 0 && !this.reportMinutes(game, added)) {
+            this.api.UI.showToast(t.toast_reportFailed, { type: "error" });
+            return;
+        }
+        this.countTime();
+        this.stats.seconds[id] = minutes * 60;
+        this.save("stats", this.stats);
+        const running = this.fakes.find(f => f.id === id);
+        if (running) this.setFakes(this.fakes.map(f => (f === running ? { ...f, start: Date.now() - minutes * MINUTE } : f)));
+        if (added > 0) this.api.UI.showToast(format(t.toast_reported, { n: added.toLocaleString(), game: game.name }), { type: "success" });
+        else this.api.UI.showToast(t.toast_lowered, { type: "info" });
+    }
+
+    reportMinutes(game, minutes) {
+        if (typeof this.analytics?.track !== "function") return false;
+        const session = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const base = { game_id: game.id, game_name: game.name, game_executable: game.exe.split("/").pop(), game_session_id: session };
+        try {
+            this.analytics.track(HEARTBEAT, { ...base, initial_heartbeat: true, final_heartbeat: false, duration_tracked_ms: 0 });
+            this.analytics.track(HEARTBEAT, { ...base, initial_heartbeat: false, final_heartbeat: true, duration_tracked_ms: minutes * MINUTE });
+            return true;
+        } catch (err) {
+            console.error("[MultiGamePlaytime]", err);
+            return false;
+        }
+    }
+
     resetStats() {
         this.stats = { seconds: {} };
         this.save("stats", this.stats);
@@ -285,7 +347,6 @@ module.exports = class MultiGamePlaytime {
 
         return UI.buildSettingsPanel({
             settings: [
-                { type: "custom", id: "notice", name: "", inline: false, children: React.createElement("div", { className: "mgp-notice" }, t.notice) },
                 { type: "switch", id: "active", name: t.set_active, note: t.note_active, value: settings.active },
                 { type: "switch", id: "showPlaying", name: t.set_showPlaying, note: t.note_showPlaying, value: settings.showPlaying },
                 { type: "dropdown", id: "atOnce", name: t.set_atOnce, value: settings.atOnce, options: AT_ONCE.map(value => ({ label: value ? String(value) : format(t.atOnce_all, { n: MAX_AT_ONCE }), value })) },
@@ -315,7 +376,6 @@ module.exports = class MultiGamePlaytime {
 
     css() {
         return `
-.mgp-notice { padding: 12px; margin-bottom: 16px; border-radius: 8px; border-left: 4px solid var(--status-warning, #f0b232); background: var(--background-base-low, #2b2d31); color: var(--text-default, #dbdee1); font-size: 14px; line-height: 1.4; }
 .mgp-manager { display: flex; flex-direction: column; gap: 12px; color: var(--text-default, #dbdee1); font-size: 14px; }
 .mgp-search { box-sizing: border-box; width: 100%; height: 40px; padding: 0 12px; border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08)); border-radius: 8px; background: var(--input-background, #1e1f22); color: var(--text-default, #dbdee1); font-size: 14px; }
 .mgp-status { color: var(--text-muted, #949ba4); font-size: 12px; }
@@ -323,7 +383,8 @@ module.exports = class MultiGamePlaytime {
 .mgp-row { display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 4px 12px; border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06)); }
 .mgp-row:first-child { border-top: 0; }
 .mgp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mgp-time { color: var(--text-muted, #949ba4); font-size: 12px; white-space: nowrap; }
+.mgp-time { display: flex; align-items: center; gap: 6px; color: var(--text-muted, #949ba4); font-size: 12px; white-space: nowrap; }
+.mgp-minutes { box-sizing: border-box; width: 96px; height: 32px; padding: 0 8px; border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08)); border-radius: 8px; background: var(--input-background, #1e1f22); color: var(--text-default, #dbdee1); font-size: 14px; text-align: right; }
 .mgp-running { color: var(--status-positive, #23a55a); font-size: 12px; font-weight: 600; white-space: nowrap; }
 .mgp-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .mgp-heading { color: var(--header-secondary, #b5bac1); font-size: 12px; font-weight: 600; text-transform: uppercase; }
@@ -365,6 +426,8 @@ function GameManager({ plugin }) {
         React.createElement("div", { className: "mgp-status" }, status),
         results.length > 0 && React.createElement("div", { className: "mgp-list" }, results.map(game => React.createElement("div", { className: "mgp-row", key: game.id },
             React.createElement("span", { className: "mgp-name", title: game.name }, game.name),
+            game.id === GTA_V_ID && game.name === "FiveM" && React.createElement("span", { className: "mgp-time" }, t.hint_fivem),
+            !game.detected && React.createElement("span", { className: "mgp-time", title: t.hint_noPc }, t.label_noPc),
             button(t.button_add, () => {
                 plugin.addGames([game]);
                 update();
@@ -382,17 +445,49 @@ function GameManager({ plugin }) {
             }, "red", !plugin.games.length)
         ),
         React.createElement("div", { className: "mgp-heading" }, format(t.list_heading, { n: plugin.games.length })),
+        plugin.games.length > 0 && React.createElement("div", { className: "mgp-status" }, t.note_minutes),
         plugin.games.length
             ? React.createElement("div", { className: "mgp-list" }, plugin.games.map(game => React.createElement("div", { className: "mgp-row", key: game.id },
                 React.createElement("span", { className: "mgp-name", title: game.name }, game.name),
                 plugin.isRunning(game.id) && React.createElement("span", { className: "mgp-running" }, t.running),
-                React.createElement("span", { className: "mgp-time" }, duration(plugin.stats.seconds[game.id] || 0, t)),
+                React.createElement(MinutesField, { plugin, game, onSaved: update }),
                 button(t.button_remove, () => {
                     plugin.removeGame(game.id);
                     update();
                 })
             )))
             : React.createElement("div", { className: "mgp-status" }, t.list_empty)
+    );
+}
+
+function MinutesField({ plugin, game, onSaved }) {
+    const { React } = BdApi;
+    const t = plugin.t;
+    const stored = plugin.minutes(game.id);
+    const [draft, setDraft] = React.useState(null);
+    const commit = () => {
+        if (draft == null) return;
+        plugin.setMinutes(game.id, draft);
+        setDraft(null);
+        onSaved();
+    };
+    return React.createElement("label", { className: "mgp-time", title: duration(plugin.stats.seconds[game.id] || 0, t) },
+        React.createElement("input", {
+            className: "mgp-minutes",
+            type: "number",
+            min: 0,
+            max: MAX_MINUTES,
+            step: 1,
+            value: draft ?? stored,
+            "aria-label": format(t.minutes_label, { game: game.name }),
+            onChange: e => setDraft(e.target.value),
+            onBlur: commit,
+            onKeyDown: e => {
+                if (e.key === "Enter") e.currentTarget.blur();
+                if (e.key === "Escape") setDraft(null);
+            },
+        }),
+        t.minutes_unit
     );
 }
 
@@ -412,7 +507,6 @@ function StatsView({ plugin }) {
 
 const labels = {
     en: {
-        notice: "Discord counts playtime for every game it sees running, also when several run at once. Progress only counts with \"Use data to personalize my Discord experience\" turned on and shows up on your badges after one to two days. Simulating games breaks Discord's Terms of Service, so your account can be restricted. This plugin never reads or sends your account token.",
         set_active: "Simulate games",
         note_active: "Discord sees the games from your list as running while Discord is open. Stays on after a restart.",
         set_showPlaying: "Show \"Playing\" on your profile",
@@ -431,7 +525,6 @@ const labels = {
         search_none: "No game with this name in Discord's list",
         database_loading: "Loading Discord's game list…",
         database_failed: "Discord's game list could not be loaded. Check your connection and open the settings again.",
-        database_ready: "{n} games in Discord's list",
         button_add: "Add",
         button_remove: "Remove",
         button_random: "Add {n} random games",
@@ -445,9 +538,18 @@ const labels = {
         toast_started: "{n} games are running",
         toast_stopped: "Simulation stopped",
         toast_empty: "Add games first, they start right away",
+        minutes_unit: "min",
+        minutes_label: "Minutes played in {game}",
+        note_minutes: "Edit the minutes next to a game and press Enter. Added minutes are reported to Discord as playtime of that game. Lowering the value only changes this list, Discord does not subtract time.",
+        toast_reported: "{n} minutes of {game} reported to Discord",
+        toast_lowered: "Changed in this list only, Discord does not subtract time",
+        toast_reportFailed: "Discord's playtime reporting was not found, nothing was changed",
+        hint_fivem: "counts as GTA V",
+        label_noPc: "no PC version",
+        hint_noPc: "Discord knows this game but no PC program for it. It shows on your profile, but may not count for the badges.",
+        database_ready: "{n} games in Discord's list · search \"gta 5\" or \"fivem\" works too",
     },
     de: {
-        notice: "Discord zählt Spielzeit für jedes Spiel, das es laufen sieht, auch wenn mehrere gleichzeitig laufen. Der Fortschritt zählt nur, wenn „Daten zur Personalisierung meiner Discord-Erfahrung nutzen“ eingeschaltet ist, und erscheint nach ein bis zwei Tagen an deinen Abzeichen. Simulierte Spiele verstoßen gegen Discords Nutzungsbedingungen, dein Account kann deshalb eingeschränkt werden. Dieses Plugin liest und sendet nie deinen Account-Token.",
         set_active: "Spiele simulieren",
         note_active: "Discord sieht die Spiele aus deiner Liste als laufend, solange Discord offen ist. Bleibt nach einem Neustart an.",
         set_showPlaying: "„Spielt“ im Profil anzeigen",
@@ -466,7 +568,6 @@ const labels = {
         search_none: "Kein Spiel mit diesem Namen in Discords Liste",
         database_loading: "Discords Spieleliste wird geladen …",
         database_failed: "Discords Spieleliste konnte nicht geladen werden. Prüfe deine Verbindung und öffne die Einstellungen erneut.",
-        database_ready: "{n} Spiele in Discords Liste",
         button_add: "Hinzufügen",
         button_remove: "Entfernen",
         button_random: "{n} zufällige Spiele hinzufügen",
@@ -480,5 +581,15 @@ const labels = {
         toast_started: "{n} Spiele laufen",
         toast_stopped: "Simulation beendet",
         toast_empty: "Füge zuerst Spiele hinzu, sie starten sofort",
+        minutes_unit: "Min.",
+        minutes_label: "Gespielte Minuten in {game}",
+        note_minutes: "Ändere die Minuten neben einem Spiel und drücke Enter. Hinzugefügte Minuten meldet das Plugin an Discord als Spielzeit dieses Spiels. Ein kleinerer Wert ändert nur diese Liste, Discord zieht keine Zeit ab.",
+        toast_reported: "{n} Minuten {game} an Discord gemeldet",
+        toast_lowered: "Nur in dieser Liste geändert, Discord zieht keine Zeit ab",
+        toast_reportFailed: "Discords Spielzeit-Meldung wurde nicht gefunden, nichts geändert",
+        hint_fivem: "zählt als GTA V",
+        label_noPc: "keine PC-Version",
+        hint_noPc: "Discord kennt dieses Spiel, aber kein PC-Programm dazu. Es erscheint im Profil, zählt aber vielleicht nicht für die Abzeichen.",
+        database_ready: "{n} Spiele in Discords Liste · auch „gta 5“ oder „fivem“ funktioniert",
     },
 };

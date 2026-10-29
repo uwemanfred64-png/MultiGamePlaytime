@@ -8,15 +8,21 @@ It runs inside your Discord app and never reads or sends your account token. Oth
 
 ## How it works
 
-The Discord desktop app keeps a list of the games running on your PC and reports playtime for each of them every 5 minutes. The plugin adds games from Discord's own game list to that list, so Discord reports them like games you started yourself. Playtime is real time: ten games running for one hour count as ten hours. Nothing is made up or sent by the plugin itself.
+The Discord desktop app keeps a list of the games running on your PC and reports playtime for each of them every 5 minutes. The plugin adds games from Discord's own game list to that list, so Discord reports them like games you started yourself. Playtime is real time: ten games running for one hour count as ten hours.
+
+You can also edit the minutes of every game. When you raise the value, the plugin reports the added minutes through Discord's own playtime report, as one session of that game. Lowering the value only changes the plugin's list, because Discord does not subtract time. Whether Discord accepts large values for the badges is not confirmed.
 
 ## Features
 
 - Search Discord's list of detectable games and add them, or add 25 random games at once
+- Short searches work: "gta 5", "gta 6", "cs 2" or "cod"
+- FiveM as its own entry; Discord counts its playtime as Grand Theft Auto V Legacy, like when you really play FiveM
+- Games Discord knows without a PC version, like Grand Theft Auto VI, can be added too. They show on your profile, but may not count for the badges
 - Choose how many games run at the same time: 1, 5, 10, 25 or all (up to 50)
 - Switch to the next games of your list every 10, 30 or 60 minutes, so more different games count for Game Variety
 - Show the first game as "Playing" on your profile, or hide it; playtime counts either way
 - See which games are running and how long each one ran
+- Edit the minutes of every game; added minutes are reported to Discord
 - Statistics: total simulated time and number of games played, with a reset button
 - Keeps running after a Discord restart
 - English and German, follows your Discord language
@@ -36,7 +42,7 @@ The Discord desktop app keeps a list of the games running on your PC and reports
 
 ## Privacy
 
-The plugin downloads Discord's public list of detectable games from cdn.discordapp.com when you open its settings. It sends no data anywhere. Your game list and statistics are stored in your BetterDiscord folder.
+The plugin downloads Discord's public list of detectable games from cdn.discordapp.com when you open its settings. It sends no data to anyone except Discord itself, and only the playtime reports described above. Your game list and statistics are stored in your BetterDiscord folder.
 
 ## License
 
