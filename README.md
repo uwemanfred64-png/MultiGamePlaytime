@@ -14,18 +14,35 @@ You can also edit the minutes of every game. When you raise the value, the plugi
 
 ## Features
 
+**Games**
 - Search Discord's list of detectable games and add them, or add 25 random games at once
 - Short searches work: "gta 5", "gta 6", "cs 2" or "cod"
 - FiveM as its own entry; Discord counts its playtime as Grand Theft Auto V Legacy, like when you really play FiveM
 - Games Discord knows without a PC version, like Grand Theft Auto VI, can be added too. They show on your profile, but may not count for the badges
+- Right click a friend who is playing to add their game
+- Game icons in the list, taken from Discord
+
+**Running**
 - Choose how many games run at the same time: 1, 5, 10, 25 or all (up to 50)
 - Switch to the next games of your list every 10, 30 or 60 minutes, so more different games count for Game Variety
-- Show the first game as "Playing" on your profile, or hide it; playtime counts either way
-- See which games are running and how long each one ran
-- Edit the minutes of every game; added minutes are reported to Discord
-- Statistics: total simulated time and number of games played, with a reset button
+- Pick the game your friends see as "Playing" with the star, or hide the activity; playtime counts either way
+- Pauses on its own while you really play a game, and continues when you close it
+- Schedule: run only between two times you choose, also across midnight
+- A gamepad button next to mute and deafen turns it on and off; green means running, yellow means paused
 - Keeps running after a Discord restart
-- English and German, follows your Discord language
+
+**Playtime**
+- Edit the minutes of every game; added minutes are reported to Discord and the "Playing" timer on your profile shows them
+- Add the same number of minutes to every game at once
+- Statistics: total simulated time and number of games played, with a reset button
+
+**Lists and sharing**
+- Several game lists, for example one for FiveM evenings and one for Game Variety
+- Copy a list as a code that starts with MGP1: and send it to a friend, or paste a friend's code
+
+**Languages**
+
+Bulgarian, Chinese (Simplified and Traditional), Croatian, Czech, Danish, Dutch, English, Finnish, French, German, Greek, Hindi, Hungarian, Indonesian, Italian, Japanese, Korean, Lithuanian, Norwegian, Polish, Portuguese (Brazil), Romanian, Russian, Spanish, Swedish, Thai, Turkish, Ukrainian, Vietnamese. It follows your Discord language, or you choose one in the settings.
 
 ## Before you use it
 
@@ -42,7 +59,7 @@ You can also edit the minutes of every game. When you raise the value, the plugi
 
 ## Privacy
 
-The plugin downloads Discord's public list of detectable games from cdn.discordapp.com when you open its settings. It sends no data to anyone except Discord itself, and only the playtime reports described above. Your game list and statistics are stored in your BetterDiscord folder.
+The plugin downloads Discord's public list of detectable games from cdn.discordapp.com when you open its settings, and the icon of each game in your list from discord.com and cdn.discordapp.com. It sends no data to anyone except Discord itself, and only the playtime reports described above. Your game list and statistics are stored in your BetterDiscord folder.
 
 ## License
 
