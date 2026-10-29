@@ -2,7 +2,7 @@
  * @name MultiGamePlaytime
  * @author uwemanfred64-png
  * @description Lets Discord see several games from its own game list running at the same time, so your playtime and the number of games you played grow for the Game Time and Game Variety badges. Rotates through your lists, lets you edit the minutes of every game, adds games from your friends' profiles, pauses while you really play, follows a schedule, shows game icons and statistics, tells you about updates, comes in 30 languages and never asks for your account token. No library needed.
- * @version 1.4.1
+ * @version 1.4.2
  * @source https://github.com/uwemanfred64-png/MultiGamePlaytime
  * @website https://github.com/uwemanfred64-png/MultiGamePlaytime
  * @updateUrl https://raw.githubusercontent.com/uwemanfred64-png/MultiGamePlaytime/main/MultiGamePlaytime.plugin.js
@@ -33,14 +33,12 @@ const LIST_NAME_LENGTH = 32;
 const SHARE_PREFIX = "MGP1:";
 const ICON_DELAY = 250;
 const PLAYING = 0;
-const OWNER_ID = "1466130197102202967";
-const RELEASES_URL = "https://api.github.com/repos/uwemanfred64-png/MultiGamePlaytime/releases";
 const UPDATE_URL = "https://raw.githubusercontent.com/uwemanfred64-png/MultiGamePlaytime/main/MultiGamePlaytime.plugin.js";
 const UPDATE_DELAY = 10000;
 const UPDATE_INTERVAL = 6 * 60 * MINUTE;
 const FILE_NAME = "MultiGamePlaytime.plugin.js";
 const CHANGELOG = [
-    { title: "Fixed", type: "fixed", items: ["Loading data from GitHub failed"] },
+    { title: "Changed", type: "improved", items: ["Cleaned up the code, nothing changes for you"] },
     { title: "New in 1.4", type: "added", items: ["This window shows up after every update", "Notice with an Update button when a new version is out, can be turned off in the settings"] },
 ];
 
@@ -143,7 +141,6 @@ module.exports = class MultiGamePlaytime {
         this.stores = {
             RunningGame: Webpack.getStore("RunningGameStore"),
             Presence: Webpack.getStore("PresenceStore"),
-            User: Webpack.getStore("UserStore"),
             Locale: Webpack.getStore("LocaleStore"),
         };
         this.dispatcher = Webpack.getByKeys("dispatch", "subscribe", "register", { searchExports: true });
@@ -270,10 +267,6 @@ module.exports = class MultiGamePlaytime {
         else this.end();
     }
 
-    isOwner() {
-        return this.stores?.User?.getCurrentUser?.()?.id === OWNER_ID;
-    }
-
     showChangelog() {
         const { Data, UI } = this.api;
         const last = Data.load("version");
@@ -315,17 +308,6 @@ module.exports = class MultiGamePlaytime {
         } catch (err) {
             this.api.UI.showToast(format(t.toast_updateFailed, { error: err?.message ?? String(err) }), { type: "error" });
         }
-    }
-
-    async loadReleases() {
-        const response = await this.api.Net.fetch(RELEASES_URL, { headers: { "User-Agent": "MultiGamePlaytime", Accept: "application/vnd.github+json" } });
-        if (!response.ok) throw new Error(String(response.status));
-        const list = await response.json();
-        return (Array.isArray(list) ? list : []).map(r => ({
-            version: String(r.tag_name ?? "").replace(/^v/, ""),
-            date: r.published_at ? new Date(r.published_at) : null,
-            downloads: (r.assets ?? []).reduce((sum, a) => sum + (Number(a.download_count) || 0), 0),
-        }));
     }
 
     save(key, value) {
@@ -802,9 +784,6 @@ module.exports = class MultiGamePlaytime {
                 { type: "category", id: "stats", name: t.settings_stats, collapsible: true, shown: false, settings: [
                     { type: "custom", id: "totals", name: "", inline: false, children: React.createElement(StatsView, { plugin: this }) },
                 ] },
-                this.isOwner() && { type: "category", id: "owner", name: "Owner", collapsible: true, shown: false, settings: [
-                    { type: "custom", id: "downloads", name: "", inline: false, children: React.createElement(OwnerView, { plugin: this }) },
-                ] },
             ].filter(Boolean),
             onChange: (group, id, value) => {
                 if (!this.settings || !(id in defaults) || id === "list" || id === "featured") return;
@@ -1034,30 +1013,6 @@ function ShareView({ plugin }) {
     );
 }
 
-function OwnerView({ plugin }) {
-    const { React } = BdApi;
-    const o = ownerLabels[plugin.t.set_active === labels.de.set_active ? "de" : "en"];
-    const [state, setState] = React.useState({ status: "loading", releases: [] });
-    const load = () => {
-        setState({ status: "loading", releases: [] });
-        plugin.loadReleases().then(releases => setState({ status: "ready", releases }), () => setState({ status: "failed", releases: [] }));
-    };
-    React.useEffect(load, []);
-    const total = state.releases.reduce((sum, r) => sum + r.downloads, 0);
-    return React.createElement("div", { className: "mgp-manager" },
-        React.createElement("div", { className: "mgp-status" }, o.note),
-        state.status === "loading" && React.createElement("div", { className: "mgp-status" }, o.loading),
-        state.status === "failed" && React.createElement("div", { className: "mgp-status" }, o.failed),
-        state.status === "ready" && React.createElement("div", { className: "mgp-heading" }, format(o.total, { n: total.toLocaleString() })),
-        state.status === "ready" && React.createElement("div", { className: "mgp-list" }, state.releases.map(r => React.createElement("div", { className: "mgp-row", key: r.version },
-            React.createElement("span", { className: "mgp-name" }, `${r.version}${r.version === plugin.version ? ` · ${o.installed}` : ""}`),
-            React.createElement("span", { className: "mgp-time" }, r.date ? r.date.toLocaleDateString() : ""),
-            React.createElement("span", { className: "mgp-running" }, format(o.downloads, { n: r.downloads.toLocaleString() }))
-        ))),
-        React.createElement("div", { className: "mgp-actions" }, button(o.refresh, load, null, state.status === "loading"))
-    );
-}
-
 function StatsView({ plugin }) {
     const { React } = BdApi;
     const t = plugin.t;
@@ -1103,11 +1058,6 @@ const languageNames = {
     vi: "Tiếng Việt",
     "zh-CN": "简体中文",
     "zh-TW": "繁體中文",
-};
-
-const ownerLabels = {
-    en: { note: "Only you see this. Downloads per version from GitHub, not exact users.", loading: "Loading…", failed: "GitHub didn't answer, try again later.", total: "{n} downloads in total", downloads: "{n} downloads", installed: "installed", refresh: "Refresh" },
-    de: { note: "Siehst nur du. Downloads je Version von GitHub, keine genaue Nutzerzahl.", loading: "Lädt …", failed: "GitHub hat nicht geantwortet, versuch es später nochmal.", total: "{n} Downloads insgesamt", downloads: "{n} Downloads", installed: "installiert", refresh: "Neu laden" },
 };
 
 const labels = {
