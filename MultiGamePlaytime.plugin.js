@@ -2,7 +2,7 @@
  * @name MultiGamePlaytime
  * @author uwemanfred64-png
  * @description Lets Discord see several games from its own game list running at the same time, so your playtime and the number of games you played grow for the Game Time and Game Variety badges. Rotates through your lists, lets you edit the minutes of every game, adds games from your friends' profiles, pauses while you really play, follows a schedule, shows game icons and statistics, tells you about updates, comes in 30 languages and never asks for your account token. No library needed.
- * @version 1.4.2
+ * @version 1.5.0
  * @source https://github.com/uwemanfred64-png/MultiGamePlaytime
  * @website https://github.com/uwemanfred64-png/MultiGamePlaytime
  * @updateUrl https://raw.githubusercontent.com/uwemanfred64-png/MultiGamePlaytime/main/MultiGamePlaytime.plugin.js
@@ -38,11 +38,10 @@ const UPDATE_DELAY = 10000;
 const UPDATE_INTERVAL = 6 * 60 * MINUTE;
 const FILE_NAME = "MultiGamePlaytime.plugin.js";
 const CHANGELOG = [
-    { title: "Changed", type: "improved", items: ["Cleaned up the code, nothing changes for you"] },
-    { title: "New in 1.4", type: "added", items: ["This window shows up after every update", "Notice with an Update button when a new version is out, can be turned off in the settings"] },
+    { title: "New", type: "added", items: ["When a new version is out, a window asks you to install it and shows the download", "The plugin pauses until you update"] },
 ];
 
-const defaults = { language: "auto", active: false, showPlaying: true, atOnce: 0, rotate: 0, pauseOnReal: true, featured: "", scheduleFrom: -1, scheduleTo: -1, panelButton: true, checkUpdates: true, list: MAIN_LIST };
+const defaults = { language: "auto", active: false, showPlaying: true, atOnce: 0, rotate: 0, pauseOnReal: true, featured: "", scheduleFrom: -1, scheduleTo: -1, panelButton: true, list: MAIN_LIST };
 
 function format(text, values) {
     return text.replace(/\{(\w+)\}/g, (match, key) => (key in values ? String(values[key]) : match));
@@ -72,6 +71,12 @@ function matchesWord(name, tokens, word) {
     if (name.includes(word)) return true;
     const number = Number(word);
     return Number.isInteger(number) && number > 0 && number < ROMAN.length && tokens.includes(ROMAN[number]);
+}
+
+function node(tag, props = {}, ...children) {
+    const element = Object.assign(document.createElement(tag), props);
+    element.append(...children.filter(c => c != null && c !== false));
+    return element;
 }
 
 function isNewer(remote, local) {
@@ -197,8 +202,7 @@ module.exports = class MultiGamePlaytime {
         clearTimeout(this.updateDelay);
         clearInterval(this.updateTimer);
         this.updateTimer = null;
-        this.closeNotice?.();
-        this.closeNotice = null;
+        this.closeUpdateModal();
         this.iconQueue = [];
         if (this.stores) {
             this.countTime();
@@ -231,7 +235,7 @@ module.exports = class MultiGamePlaytime {
         button.type = "button";
         button.className = `${template?.className ?? ""} mgp-panel`.trim();
         button.append(gamepadIcon(20));
-        button.addEventListener("click", () => this.toggleActive());
+        button.addEventListener("click", () => (this.updateRequired ? this.showUpdateModal() : this.toggleActive()));
         this.panelTooltip = this.api.UI.createTooltip?.(button, "MultiGamePlaytime", { side: "top" }) ?? null;
         row.prepend(button);
         this.panelButton = button;
@@ -245,12 +249,13 @@ module.exports = class MultiGamePlaytime {
         button.setAttribute("aria-label", label);
         button.setAttribute("aria-pressed", String(!!this.settings.active));
         button.classList.toggle("mgp-panel-on", this.fakes.length > 0);
-        button.classList.toggle("mgp-panel-paused", this.settings.active && !this.fakes.length);
+        button.classList.toggle("mgp-panel-paused", (this.settings.active || !!this.updateRequired) && !this.fakes.length);
         if (this.panelTooltip?.labelElement) this.panelTooltip.labelElement.textContent = label;
     }
 
     statusText() {
         const t = this.t;
+        if (this.updateRequired) return format(t.status_updateRequired, { version: this.updateRequired });
         if (!this.settings?.active) return t.status_off;
         if (this.fakes.length) return format(t.status_running, { n: this.fakes.length });
         const real = this.realGames();
@@ -277,36 +282,112 @@ module.exports = class MultiGamePlaytime {
     }
 
     async checkForUpdate() {
-        if (!this.settings?.checkUpdates || this.closeNotice || !this.api.Net?.fetch) return;
+        if (!this.settings || this.updating || !this.api.Net?.fetch) return;
         try {
             const response = await this.api.Net.fetch(UPDATE_URL);
             if (!response.ok) return;
             const code = await response.text();
             const remote = /@version\s+([\d.]+)/.exec(code)?.[1];
             if (!this.settings || !remote || !isNewer(remote, this.version) || !code.includes("@name MultiGamePlaytime")) return;
-            const t = this.t;
-            this.closeNotice = this.api.UI.showNotice(format(t.notice_update, { version: remote }), {
-                type: "info",
-                buttons: [{ label: t.button_update, onClick: close => {
-                    close?.();
-                    this.closeNotice = null;
-                    this.installUpdate(code, remote);
-                } }],
-            });
+            this.updateRequired = remote;
+            this.sync();
+            this.showUpdateModal();
         } catch (err) {
             console.error("[MultiGamePlaytime]", err);
         }
     }
 
-    installUpdate(code, version) {
+    showUpdateModal() {
+        if (!this.updateRequired || this.updateModal?.isConnected) return;
         const t = this.t;
+        const fill = node("div", { className: "mgp-progress-fill" });
+        const progress = node("div", { className: "mgp-progress", hidden: true }, fill);
+        const status = node("div", { className: "mgp-modal-status" });
+        const later = node("button", { type: "button", className: "mgp-modal-later", textContent: t.button_later });
+        const install = node("button", { type: "button", className: "mgp-modal-install", textContent: t.button_install });
+        const box = node("div", { className: "mgp-modal" },
+            node("h2", { className: "mgp-modal-title", textContent: t.update_title }),
+            node("p", { className: "mgp-modal-text", textContent: format(t.update_text, { version: this.updateRequired }) }),
+            progress,
+            status,
+            node("div", { className: "mgp-modal-actions" }, later, install)
+        );
+        box.setAttribute("role", "dialog");
+        box.setAttribute("aria-modal", "true");
+        const backdrop = node("div", { className: "mgp-modal-backdrop" }, box);
+        backdrop.addEventListener("keydown", e => {
+            if (e.key === "Escape" && !this.updating) this.closeUpdateModal();
+        });
+        later.addEventListener("click", () => this.closeUpdateModal());
+        install.addEventListener("click", () => this.installUpdate({ install, later, progress, fill, status }));
+        document.body.append(backdrop);
+        this.updateModal = backdrop;
+        install.focus();
+    }
+
+    closeUpdateModal() {
+        this.updateModal?.remove();
+        this.updateModal = null;
+    }
+
+    async downloadUpdate(onProgress) {
+        const response = await this.api.Net.fetch(UPDATE_URL);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const length = Number(typeof response.headers?.get === "function" ? response.headers.get("content-length") : response.headers?.["content-length"]) || 0;
+        if (!response.body?.getReader) {
+            const text = await response.text();
+            onProgress(100);
+            return text;
+        }
+        const reader = response.body.getReader();
+        const chunks = [];
+        let received = 0;
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            received += value.length;
+            onProgress(length ? Math.min(99, Math.floor((received / length) * 100)) : null);
+        }
+        const bytes = new Uint8Array(received);
+        let offset = 0;
+        for (const chunk of chunks) {
+            bytes.set(chunk, offset);
+            offset += chunk.length;
+        }
+        onProgress(100);
+        return new TextDecoder().decode(bytes);
+    }
+
+    async installUpdate({ install, later, progress, fill, status }) {
+        const t = this.t;
+        this.updating = true;
+        install.disabled = true;
+        later.disabled = true;
+        progress.hidden = false;
+        progress.classList.remove("mgp-progress-busy");
+        fill.style.width = "0%";
+        const show = percent => {
+            progress.classList.toggle("mgp-progress-busy", percent == null);
+            if (percent != null) fill.style.width = `${percent}%`;
+            status.textContent = format(t.update_downloading, { percent: percent ?? "…" });
+        };
+        show(0);
         try {
+            const code = await this.downloadUpdate(show);
+            const version = /@version\s+([\d.]+)/.exec(code)?.[1];
+            if (!code.includes("@name MultiGamePlaytime") || !version || !isNewer(version, this.version)) throw new Error("invalid file");
             const fs = require("fs");
             const path = require("path");
             fs.writeFileSync(path.join(this.api.Plugins.folder, this.fileName), code);
+            status.textContent = t.update_installed;
             this.api.UI.showToast(format(t.toast_updated, { version }), { type: "success" });
         } catch (err) {
-            this.api.UI.showToast(format(t.toast_updateFailed, { error: err?.message ?? String(err) }), { type: "error" });
+            this.updating = false;
+            install.disabled = false;
+            later.disabled = false;
+            progress.hidden = true;
+            status.textContent = format(t.toast_updateFailed, { error: err?.message ?? String(err) });
         }
     }
 
@@ -338,7 +419,7 @@ module.exports = class MultiGamePlaytime {
     }
 
     shouldRun() {
-        return !!this.settings?.active && this.inSchedule() && !(this.settings.pauseOnReal && this.realGames().length);
+        return !!this.settings?.active && !this.updateRequired && this.inSchedule() && !(this.settings.pauseOnReal && this.realGames().length);
     }
 
     shownFake() {
@@ -769,7 +850,6 @@ module.exports = class MultiGamePlaytime {
                 { type: "switch", id: "showPlaying", name: t.set_showPlaying, note: t.note_showPlaying, value: settings.showPlaying },
                 { type: "switch", id: "pauseOnReal", name: t.set_pauseOnReal, note: t.note_pauseOnReal, value: settings.pauseOnReal },
                 { type: "switch", id: "panelButton", name: t.set_panelButton, note: t.note_panelButton, value: settings.panelButton },
-                { type: "switch", id: "checkUpdates", name: t.set_checkUpdates, note: t.note_checkUpdates, value: settings.checkUpdates },
                 { type: "dropdown", id: "atOnce", name: t.set_atOnce, value: settings.atOnce, options: AT_ONCE.map(value => ({ label: value ? String(value) : format(t.atOnce_all, { n: MAX_AT_ONCE }), value })) },
                 { type: "dropdown", id: "rotate", name: t.set_rotate, note: t.note_rotate, value: settings.rotate, options: ROTATE.map(value => ({ label: value ? format(t.rotate_minutes, { n: value }) : t.rotate_off, value })) },
                 { type: "dropdown", id: "scheduleFrom", name: t.set_scheduleFrom, note: t.note_schedule, value: settings.scheduleFrom, options: hours },
@@ -791,7 +871,6 @@ module.exports = class MultiGamePlaytime {
                 this.save("settings", this.settings);
                 if (id === "active") return value ? this.begin() : this.end();
                 if (id === "panelButton") return this.observer();
-                if (id === "checkUpdates") return value ? this.checkForUpdate() : undefined;
                 if (id === "showPlaying" && this.fakes.length) {
                     const running = this.fakes;
                     this.setFakes([]);
@@ -825,6 +904,23 @@ module.exports = class MultiGamePlaytime {
 .mgp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .mgp-heading { color: var(--header-secondary, #b5bac1); font-size: 12px; font-weight: 600; text-transform: uppercase; }
 .mgp-stats { display: flex; align-items: center; justify-content: space-between; gap: 16px; color: var(--text-default, #dbdee1); font-size: 14px; }
+.mgp-modal-backdrop { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.7); }
+.mgp-modal { box-sizing: border-box; width: 440px; max-width: calc(100vw - 32px); padding: 24px; border-radius: 8px; background: var(--modal-background, var(--background-base-low, #313338)); color: var(--text-default, #dbdee1); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); font-family: var(--font-primary, inherit); }
+.mgp-modal-title { margin: 0 0 8px; color: var(--header-primary, #f2f3f5); font-size: 20px; font-weight: 600; }
+.mgp-modal-text { margin: 0 0 16px; font-size: 14px; line-height: 1.4; }
+.mgp-progress { overflow: hidden; height: 8px; margin-bottom: 8px; border-radius: 4px; background: var(--background-mod-strong, #4e5058); }
+.mgp-progress[hidden] { display: none; }
+.mgp-progress-fill { width: 0; height: 100%; border-radius: 4px; background: var(--brand-500, #5865f2); transition: width 0.15s; }
+.mgp-progress-busy .mgp-progress-fill { width: 30%; animation: mgp-busy 1s ease-in-out infinite alternate; }
+@keyframes mgp-busy { from { margin-left: 0; } to { margin-left: 70%; } }
+.mgp-modal-status { min-height: 18px; margin-bottom: 16px; color: var(--text-muted, #949ba4); font-size: 12px; }
+.mgp-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.mgp-modal-actions button { font-family: inherit; height: 38px; padding: 0 16px; border: 0; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; }
+.mgp-modal-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+.mgp-modal-later { background: transparent; color: var(--text-default, #dbdee1); }
+.mgp-modal-later:hover:not(:disabled) { text-decoration: underline; }
+.mgp-modal-install { background: var(--brand-500, #5865f2); color: #fff; }
+.mgp-modal-install:hover:not(:disabled) { background: var(--brand-560, #4752c4); }
 .mgp-panel.mgp-panel-on { color: var(--status-positive, #23a55a); }
 .mgp-panel.mgp-panel-paused { color: var(--status-warning, #f0b232); }
 `;
@@ -1140,12 +1236,15 @@ const labels = {
         toast_listEmpty: "This list has no games yet",
         toast_importInvalid: "This is not a valid MultiGamePlaytime code",
         toast_imported: "{n} games added",
-        set_checkUpdates: "Check for updates",
-        note_checkUpdates: "Looks on GitHub for a new version and offers to install it with one click.",
-        notice_update: "MultiGamePlaytime {version} is available.",
-        button_update: "Update",
         toast_updated: "Updated to {version}",
         toast_updateFailed: "Update failed: {error}",
+        update_title: "Update required",
+        update_text: "Version {version} is out. MultiGamePlaytime is paused until you install it.",
+        button_install: "Install latest version",
+        button_later: "Later",
+        update_downloading: "Downloading… {percent}%",
+        update_installed: "Done, reloading the plugin",
+        status_updateRequired: "Paused, update to {version} required",
     },
     de: {
         set_active: "Spiele simulieren",
@@ -1226,12 +1325,15 @@ const labels = {
         toast_listEmpty: "Diese Liste hat noch keine Spiele",
         toast_importInvalid: "Das ist kein gültiger MultiGamePlaytime-Code",
         toast_imported: "{n} Spiele hinzugefügt",
-        set_checkUpdates: "Nach Updates suchen",
-        note_checkUpdates: "Sucht auf GitHub nach einer neuen Version und bietet die Installation mit einem Klick an.",
-        notice_update: "MultiGamePlaytime {version} ist verfügbar.",
-        button_update: "Aktualisieren",
         toast_updated: "Auf {version} aktualisiert",
         toast_updateFailed: "Update fehlgeschlagen: {error}",
+        update_title: "Update nötig",
+        update_text: "Version {version} ist da. MultiGamePlaytime ist pausiert, bis du sie installierst.",
+        button_install: "Neueste Version installieren",
+        button_later: "Später",
+        update_downloading: "Lädt herunter … {percent} %",
+        update_installed: "Fertig, Plugin wird neu geladen",
+        status_updateRequired: "Pausiert, Update auf {version} nötig",
     },
     bg: {
         set_active: "Симулиране на игри",
@@ -1312,12 +1414,15 @@ const labels = {
         toast_listEmpty: "Този списък още няма игри",
         toast_importInvalid: "Това не е валиден код за MultiGamePlaytime",
         toast_imported: "Добавени са {n} игри",
-        set_checkUpdates: "Проверка за актуализации",
-        note_checkUpdates: "Търси нова версия в GitHub и предлага инсталиране с едно щракване.",
-        notice_update: "Налична е MultiGamePlaytime {version}.",
-        button_update: "Актуализиране",
         toast_updated: "Актуализирано до {version}",
         toast_updateFailed: "Актуализацията не успя: {error}",
+        update_title: "Нужна е актуализация",
+        update_text: "Излезе версия {version}. MultiGamePlaytime е на пауза, докато не я инсталираш.",
+        button_install: "Инсталирай последната версия",
+        button_later: "По-късно",
+        update_downloading: "Изтегляне… {percent}%",
+        update_installed: "Готово, плъгинът се презарежда",
+        status_updateRequired: "На пауза, нужна е версия {version}",
     },
     cs: {
         set_active: "Simulovat hry",
@@ -1398,12 +1503,15 @@ const labels = {
         toast_listEmpty: "Tento seznam zatím nemá žádné hry",
         toast_importInvalid: "Toto není platný kód MultiGamePlaytime",
         toast_imported: "Přidané hry: {n}",
-        set_checkUpdates: "Hledat aktualizace",
-        note_checkUpdates: "Hledá novou verzi na GitHubu a nabídne instalaci jedním kliknutím.",
-        notice_update: "MultiGamePlaytime {version} je k dispozici.",
-        button_update: "Aktualizovat",
         toast_updated: "Aktualizováno na {version}",
         toast_updateFailed: "Aktualizace selhala: {error}",
+        update_title: "Je potřeba aktualizace",
+        update_text: "Vyšla verze {version}. MultiGamePlaytime je pozastavený, dokud ji nenainstaluješ.",
+        button_install: "Nainstalovat nejnovější verzi",
+        button_later: "Později",
+        update_downloading: "Stahování… {percent} %",
+        update_installed: "Hotovo, plugin se načítá znovu",
+        status_updateRequired: "Pozastaveno, je potřeba verze {version}",
     },
     da: {
         set_active: "Simulér spil",
@@ -1484,12 +1592,15 @@ const labels = {
         toast_listEmpty: "Denne liste har ingen spil endnu",
         toast_importInvalid: "Dette er ikke en gyldig MultiGamePlaytime-kode",
         toast_imported: "{n} spil tilføjet",
-        set_checkUpdates: "Søg efter opdateringer",
-        note_checkUpdates: "Søger efter en ny version på GitHub og tilbyder at installere den med ét klik.",
-        notice_update: "MultiGamePlaytime {version} er tilgængelig.",
-        button_update: "Opdater",
         toast_updated: "Opdateret til {version}",
         toast_updateFailed: "Opdatering mislykkedes: {error}",
+        update_title: "Opdatering påkrævet",
+        update_text: "Version {version} er ude. MultiGamePlaytime holder pause, indtil du installerer den.",
+        button_install: "Installér nyeste version",
+        button_later: "Senere",
+        update_downloading: "Henter… {percent} %",
+        update_installed: "Færdig, pluginet genindlæses",
+        status_updateRequired: "På pause, opdatering til {version} påkrævet",
     },
     el: {
         set_active: "Προσομοίωση παιχνιδιών",
@@ -1570,12 +1681,15 @@ const labels = {
         toast_listEmpty: "Αυτή η λίστα δεν έχει ακόμα παιχνίδια",
         toast_importInvalid: "Αυτός δεν είναι έγκυρος κωδικός MultiGamePlaytime",
         toast_imported: "Προστέθηκαν {n} παιχνίδια",
-        set_checkUpdates: "Έλεγχος για ενημερώσεις",
-        note_checkUpdates: "Αναζητά νέα έκδοση στο GitHub και προτείνει εγκατάσταση με ένα κλικ.",
-        notice_update: "Το MultiGamePlaytime {version} είναι διαθέσιμο.",
-        button_update: "Ενημέρωση",
         toast_updated: "Ενημερώθηκε στην {version}",
         toast_updateFailed: "Η ενημέρωση απέτυχε: {error}",
+        update_title: "Απαιτείται ενημέρωση",
+        update_text: "Βγήκε η έκδοση {version}. Το MultiGamePlaytime είναι σε παύση μέχρι να την εγκαταστήσεις.",
+        button_install: "Εγκατάσταση νεότερης έκδοσης",
+        button_later: "Αργότερα",
+        update_downloading: "Λήψη… {percent}%",
+        update_installed: "Έτοιμο, το πρόσθετο φορτώνει ξανά",
+        status_updateRequired: "Σε παύση, χρειάζεται η έκδοση {version}",
     },
     es: {
         set_active: "Simular juegos",
@@ -1656,12 +1770,15 @@ const labels = {
         toast_listEmpty: "Esta lista aún no tiene juegos",
         toast_importInvalid: "Este no es un código válido de MultiGamePlaytime",
         toast_imported: "{n} juegos añadidos",
-        set_checkUpdates: "Buscar actualizaciones",
-        note_checkUpdates: "Busca una nueva versión en GitHub y ofrece instalarla con un clic.",
-        notice_update: "MultiGamePlaytime {version} está disponible.",
-        button_update: "Actualizar",
         toast_updated: "Actualizado a {version}",
         toast_updateFailed: "Error al actualizar: {error}",
+        update_title: "Actualización necesaria",
+        update_text: "Ya salió la versión {version}. MultiGamePlaytime está en pausa hasta que la instales.",
+        button_install: "Instalar la última versión",
+        button_later: "Más tarde",
+        update_downloading: "Descargando… {percent} %",
+        update_installed: "Listo, recargando el plugin",
+        status_updateRequired: "En pausa, hace falta la versión {version}",
     },
     fi: {
         set_active: "Simuloi pelejä",
@@ -1742,12 +1859,15 @@ const labels = {
         toast_listEmpty: "Tällä listalla ei ole vielä pelejä",
         toast_importInvalid: "Tämä ei ole kelvollinen MultiGamePlaytime-koodi",
         toast_imported: "{n} peliä lisätty",
-        set_checkUpdates: "Tarkista päivitykset",
-        note_checkUpdates: "Etsii uutta versiota GitHubista ja tarjoaa asennusta yhdellä napsautuksella.",
-        notice_update: "MultiGamePlaytime {version} on saatavilla.",
-        button_update: "Päivitä",
         toast_updated: "Päivitetty versioon {version}",
         toast_updateFailed: "Päivitys epäonnistui: {error}",
+        update_title: "Päivitys tarvitaan",
+        update_text: "Versio {version} on julkaistu. MultiGamePlaytime on tauolla, kunnes asennat sen.",
+        button_install: "Asenna uusin versio",
+        button_later: "Myöhemmin",
+        update_downloading: "Ladataan… {percent} %",
+        update_installed: "Valmis, lisäosa ladataan uudelleen",
+        status_updateRequired: "Tauolla, tarvitaan versio {version}",
     },
     fr: {
         set_active: "Simuler des jeux",
@@ -1828,12 +1948,15 @@ const labels = {
         toast_listEmpty: "Cette liste n'a encore aucun jeu",
         toast_importInvalid: "Ce n'est pas un code MultiGamePlaytime valide",
         toast_imported: "{n} jeux ajoutés",
-        set_checkUpdates: "Rechercher des mises à jour",
-        note_checkUpdates: "Cherche une nouvelle version sur GitHub et propose de l'installer en un clic.",
-        notice_update: "MultiGamePlaytime {version} est disponible.",
-        button_update: "Mettre à jour",
         toast_updated: "Mis à jour vers {version}",
         toast_updateFailed: "Échec de la mise à jour : {error}",
+        update_title: "Mise à jour nécessaire",
+        update_text: "La version {version} est sortie. MultiGamePlaytime est en pause tant que tu ne l'as pas installée.",
+        button_install: "Installer la dernière version",
+        button_later: "Plus tard",
+        update_downloading: "Téléchargement… {percent} %",
+        update_installed: "Terminé, le plugin se recharge",
+        status_updateRequired: "En pause, la version {version} est nécessaire",
     },
     hi: {
         set_active: "गेम सिमुलेट करें",
@@ -1914,12 +2037,15 @@ const labels = {
         toast_listEmpty: "इस सूची में अभी कोई गेम नहीं है",
         toast_importInvalid: "यह मान्य MultiGamePlaytime कोड नहीं है",
         toast_imported: "{n} गेम जोड़े गए",
-        set_checkUpdates: "अपडेट की जाँच करें",
-        note_checkUpdates: "GitHub पर नया संस्करण खोजता है और एक क्लिक में इंस्टॉल करने का विकल्प देता है।",
-        notice_update: "MultiGamePlaytime {version} उपलब्ध है।",
-        button_update: "अपडेट करें",
         toast_updated: "{version} पर अपडेट हो गया",
         toast_updateFailed: "अपडेट विफल: {error}",
+        update_title: "अपडेट ज़रूरी है",
+        update_text: "वर्ज़न {version} आ गया है। इसे इंस्टॉल करने तक MultiGamePlaytime रुका रहेगा।",
+        button_install: "नया वर्ज़न इंस्टॉल करें",
+        button_later: "बाद में",
+        update_downloading: "डाउनलोड हो रहा है… {percent}%",
+        update_installed: "हो गया, प्लगइन फिर से लोड हो रहा है",
+        status_updateRequired: "रुका हुआ, वर्ज़न {version} ज़रूरी है",
     },
     hr: {
         set_active: "Simuliraj igre",
@@ -2000,12 +2126,15 @@ const labels = {
         toast_listEmpty: "Ovaj popis još nema igara",
         toast_importInvalid: "Ovo nije valjani MultiGamePlaytime kod",
         toast_imported: "Dodane igre: {n}",
-        set_checkUpdates: "Provjeravaj ažuriranja",
-        note_checkUpdates: "Traži novu verziju na GitHubu i nudi instalaciju jednim klikom.",
-        notice_update: "MultiGamePlaytime {version} je dostupan.",
-        button_update: "Ažuriraj",
         toast_updated: "Ažurirano na {version}",
         toast_updateFailed: "Ažuriranje nije uspjelo: {error}",
+        update_title: "Potrebno ažuriranje",
+        update_text: "Izašla je verzija {version}. MultiGamePlaytime je pauziran dok je ne instaliraš.",
+        button_install: "Instaliraj najnoviju verziju",
+        button_later: "Kasnije",
+        update_downloading: "Preuzimanje… {percent} %",
+        update_installed: "Gotovo, dodatak se ponovno učitava",
+        status_updateRequired: "Pauzirano, potrebna je verzija {version}",
     },
     hu: {
         set_active: "Játékok szimulálása",
@@ -2086,12 +2215,15 @@ const labels = {
         toast_listEmpty: "Ebben a listában még nincsenek játékok",
         toast_importInvalid: "Ez nem érvényes MultiGamePlaytime-kód",
         toast_imported: "{n} játék hozzáadva",
-        set_checkUpdates: "Frissítések keresése",
-        note_checkUpdates: "Új verziót keres a GitHubon, és felajánlja a telepítését egy kattintással.",
-        notice_update: "Elérhető a MultiGamePlaytime {version}.",
-        button_update: "Frissítés",
         toast_updated: "Frissítve erre: {version}",
         toast_updateFailed: "A frissítés sikertelen: {error}",
+        update_title: "Frissítés szükséges",
+        update_text: "Megjelent a(z) {version} verzió. A MultiGamePlaytime szünetel, amíg nem telepíted.",
+        button_install: "Legújabb verzió telepítése",
+        button_later: "Később",
+        update_downloading: "Letöltés… {percent}%",
+        update_installed: "Kész, a bővítmény újratöltődik",
+        status_updateRequired: "Szünetel, a(z) {version} verzió kell",
     },
     id: {
         set_active: "Simulasikan game",
@@ -2172,12 +2304,15 @@ const labels = {
         toast_listEmpty: "Daftar ini belum berisi game",
         toast_importInvalid: "Ini bukan kode MultiGamePlaytime yang valid",
         toast_imported: "{n} game ditambahkan",
-        set_checkUpdates: "Periksa pembaruan",
-        note_checkUpdates: "Mencari versi baru di GitHub dan menawarkan pemasangan dengan satu klik.",
-        notice_update: "MultiGamePlaytime {version} tersedia.",
-        button_update: "Perbarui",
         toast_updated: "Diperbarui ke {version}",
         toast_updateFailed: "Pembaruan gagal: {error}",
+        update_title: "Perlu pembaruan",
+        update_text: "Versi {version} sudah keluar. MultiGamePlaytime dijeda sampai kamu memasangnya.",
+        button_install: "Pasang versi terbaru",
+        button_later: "Nanti",
+        update_downloading: "Mengunduh… {percent}%",
+        update_installed: "Selesai, plugin dimuat ulang",
+        status_updateRequired: "Dijeda, perlu versi {version}",
     },
     it: {
         set_active: "Simula giochi",
@@ -2258,12 +2393,15 @@ const labels = {
         toast_listEmpty: "Questa lista non ha ancora giochi",
         toast_importInvalid: "Questo non è un codice MultiGamePlaytime valido",
         toast_imported: "{n} giochi aggiunti",
-        set_checkUpdates: "Cerca aggiornamenti",
-        note_checkUpdates: "Cerca una nuova versione su GitHub e propone di installarla con un clic.",
-        notice_update: "MultiGamePlaytime {version} è disponibile.",
-        button_update: "Aggiorna",
         toast_updated: "Aggiornato a {version}",
         toast_updateFailed: "Aggiornamento non riuscito: {error}",
+        update_title: "Aggiornamento necessario",
+        update_text: "È uscita la versione {version}. MultiGamePlaytime è in pausa finché non la installi.",
+        button_install: "Installa l'ultima versione",
+        button_later: "Più tardi",
+        update_downloading: "Download… {percent}%",
+        update_installed: "Fatto, il plugin si ricarica",
+        status_updateRequired: "In pausa, serve la versione {version}",
     },
     ja: {
         set_active: "ゲームをシミュレート",
@@ -2344,12 +2482,15 @@ const labels = {
         toast_listEmpty: "このリストにはまだゲームがありません",
         toast_importInvalid: "有効な MultiGamePlaytime コードではありません",
         toast_imported: "{n} 本のゲームを追加しました",
-        set_checkUpdates: "アップデートを確認",
-        note_checkUpdates: "GitHubで新しいバージョンを探し、ワンクリックでのインストールを提案します。",
-        notice_update: "MultiGamePlaytime {version} が利用可能です。",
-        button_update: "アップデート",
         toast_updated: "{version} にアップデートしました",
         toast_updateFailed: "アップデートに失敗しました: {error}",
+        update_title: "アップデートが必要です",
+        update_text: "バージョン{version}が出ました。インストールするまでMultiGamePlaytimeは一時停止します。",
+        button_install: "最新版をインストール",
+        button_later: "あとで",
+        update_downloading: "ダウンロード中… {percent}%",
+        update_installed: "完了、プラグインを再読み込みします",
+        status_updateRequired: "一時停止中、{version}へのアップデートが必要です",
     },
     ko: {
         set_active: "게임 시뮬레이션",
@@ -2430,12 +2571,15 @@ const labels = {
         toast_listEmpty: "이 목록에는 아직 게임이 없습니다",
         toast_importInvalid: "유효한 MultiGamePlaytime 코드가 아닙니다",
         toast_imported: "게임 {n}개를 추가했습니다",
-        set_checkUpdates: "업데이트 확인",
-        note_checkUpdates: "GitHub에서 새 버전을 찾아 클릭 한 번으로 설치하도록 안내합니다.",
-        notice_update: "MultiGamePlaytime {version}을(를) 사용할 수 있습니다.",
-        button_update: "업데이트",
         toast_updated: "{version}(으)로 업데이트했습니다",
         toast_updateFailed: "업데이트 실패: {error}",
+        update_title: "업데이트 필요",
+        update_text: "{version} 버전이 나왔습니다. 설치할 때까지 MultiGamePlaytime이 멈춥니다.",
+        button_install: "최신 버전 설치",
+        button_later: "나중에",
+        update_downloading: "다운로드 중… {percent}%",
+        update_installed: "완료, 플러그인을 다시 불러옵니다",
+        status_updateRequired: "일시 정지됨, {version} 업데이트 필요",
     },
     lt: {
         set_active: "Simuliuoti žaidimus",
@@ -2516,12 +2660,15 @@ const labels = {
         toast_listEmpty: "Šiame sąraše dar nėra žaidimų",
         toast_importInvalid: "Tai netinkamas MultiGamePlaytime kodas",
         toast_imported: "Pridėta žaidimų: {n}",
-        set_checkUpdates: "Tikrinti atnaujinimus",
-        note_checkUpdates: "Ieško naujos versijos „GitHub“ ir pasiūlo ją įdiegti vienu spustelėjimu.",
-        notice_update: "Galima MultiGamePlaytime {version} versija.",
-        button_update: "Atnaujinti",
         toast_updated: "Atnaujinta į {version}",
         toast_updateFailed: "Atnaujinti nepavyko: {error}",
+        update_title: "Reikia atnaujinti",
+        update_text: "Išleista versija {version}. MultiGamePlaytime sustabdytas, kol jos neįdiegsi.",
+        button_install: "Įdiegti naujausią versiją",
+        button_later: "Vėliau",
+        update_downloading: "Atsisiunčiama… {percent} %",
+        update_installed: "Baigta, papildinys įkeliamas iš naujo",
+        status_updateRequired: "Sustabdyta, reikia versijos {version}",
     },
     nl: {
         set_active: "Games simuleren",
@@ -2602,12 +2749,15 @@ const labels = {
         toast_listEmpty: "Deze lijst heeft nog geen games",
         toast_importInvalid: "Dit is geen geldige MultiGamePlaytime-code",
         toast_imported: "{n} games toegevoegd",
-        set_checkUpdates: "Zoeken naar updates",
-        note_checkUpdates: "Zoekt op GitHub naar een nieuwe versie en biedt aan die met één klik te installeren.",
-        notice_update: "MultiGamePlaytime {version} is beschikbaar.",
-        button_update: "Bijwerken",
         toast_updated: "Bijgewerkt naar {version}",
         toast_updateFailed: "Bijwerken mislukt: {error}",
+        update_title: "Update vereist",
+        update_text: "Versie {version} is uit. MultiGamePlaytime staat op pauze tot je die installeert.",
+        button_install: "Nieuwste versie installeren",
+        button_later: "Later",
+        update_downloading: "Downloaden… {percent}%",
+        update_installed: "Klaar, plugin wordt herladen",
+        status_updateRequired: "Gepauzeerd, update naar {version} vereist",
     },
     no: {
         set_active: "Simuler spill",
@@ -2688,12 +2838,15 @@ const labels = {
         toast_listEmpty: "Denne listen har ingen spill ennå",
         toast_importInvalid: "Dette er ikke en gyldig MultiGamePlaytime-kode",
         toast_imported: "{n} spill lagt til",
-        set_checkUpdates: "Se etter oppdateringer",
-        note_checkUpdates: "Ser etter en ny versjon på GitHub og tilbyr å installere den med ett klikk.",
-        notice_update: "MultiGamePlaytime {version} er tilgjengelig.",
-        button_update: "Oppdater",
         toast_updated: "Oppdatert til {version}",
         toast_updateFailed: "Oppdateringen mislyktes: {error}",
+        update_title: "Oppdatering kreves",
+        update_text: "Versjon {version} er ute. MultiGamePlaytime står på pause til du installerer den.",
+        button_install: "Installer nyeste versjon",
+        button_later: "Senere",
+        update_downloading: "Laster ned… {percent} %",
+        update_installed: "Ferdig, utvidelsen lastes inn på nytt",
+        status_updateRequired: "På pause, oppdatering til {version} kreves",
     },
     pl: {
         set_active: "Symuluj gry",
@@ -2774,12 +2927,15 @@ const labels = {
         toast_listEmpty: "Ta lista nie ma jeszcze gier",
         toast_importInvalid: "To nie jest prawidłowy kod MultiGamePlaytime",
         toast_imported: "Dodano gry: {n}",
-        set_checkUpdates: "Sprawdzaj aktualizacje",
-        note_checkUpdates: "Szuka nowej wersji na GitHubie i proponuje instalację jednym kliknięciem.",
-        notice_update: "MultiGamePlaytime {version} jest dostępny.",
-        button_update: "Aktualizuj",
         toast_updated: "Zaktualizowano do {version}",
         toast_updateFailed: "Aktualizacja nie powiodła się: {error}",
+        update_title: "Wymagana aktualizacja",
+        update_text: "Wyszła wersja {version}. MultiGamePlaytime jest wstrzymany, dopóki jej nie zainstalujesz.",
+        button_install: "Zainstaluj najnowszą wersję",
+        button_later: "Później",
+        update_downloading: "Pobieranie… {percent}%",
+        update_installed: "Gotowe, plugin ładuje się ponownie",
+        status_updateRequired: "Wstrzymano, wymagana wersja {version}",
     },
     "pt-BR": {
         set_active: "Simular jogos",
@@ -2860,12 +3016,15 @@ const labels = {
         toast_listEmpty: "Esta lista ainda não tem jogos",
         toast_importInvalid: "Este não é um código válido do MultiGamePlaytime",
         toast_imported: "{n} jogos adicionados",
-        set_checkUpdates: "Procurar atualizações",
-        note_checkUpdates: "Procura uma nova versão no GitHub e oferece instalá-la com um clique.",
-        notice_update: "MultiGamePlaytime {version} está disponível.",
-        button_update: "Atualizar",
         toast_updated: "Atualizado para {version}",
         toast_updateFailed: "Falha na atualização: {error}",
+        update_title: "Atualização necessária",
+        update_text: "A versão {version} saiu. O MultiGamePlaytime fica pausado até você instalar.",
+        button_install: "Instalar a versão mais nova",
+        button_later: "Depois",
+        update_downloading: "Baixando… {percent}%",
+        update_installed: "Pronto, recarregando o plugin",
+        status_updateRequired: "Pausado, precisa da versão {version}",
     },
     ro: {
         set_active: "Simulează jocuri",
@@ -2946,12 +3105,15 @@ const labels = {
         toast_listEmpty: "Această listă nu are încă jocuri",
         toast_importInvalid: "Acesta nu e un cod MultiGamePlaytime valid",
         toast_imported: "Jocuri adăugate: {n}",
-        set_checkUpdates: "Caută actualizări",
-        note_checkUpdates: "Caută o versiune nouă pe GitHub și oferă instalarea cu un singur clic.",
-        notice_update: "MultiGamePlaytime {version} este disponibil.",
-        button_update: "Actualizează",
         toast_updated: "Actualizat la {version}",
         toast_updateFailed: "Actualizarea a eșuat: {error}",
+        update_title: "Actualizare necesară",
+        update_text: "A apărut versiunea {version}. MultiGamePlaytime e pe pauză până o instalezi.",
+        button_install: "Instalează ultima versiune",
+        button_later: "Mai târziu",
+        update_downloading: "Se descarcă… {percent}%",
+        update_installed: "Gata, pluginul se reîncarcă",
+        status_updateRequired: "Pe pauză, e nevoie de versiunea {version}",
     },
     ru: {
         set_active: "Симулировать игры",
@@ -3032,12 +3194,15 @@ const labels = {
         toast_listEmpty: "В этом списке пока нет игр",
         toast_importInvalid: "Это недействительный код MultiGamePlaytime",
         toast_imported: "Добавлено игр: {n}",
-        set_checkUpdates: "Проверять обновления",
-        note_checkUpdates: "Ищет новую версию на GitHub и предлагает установить её одним щелчком.",
-        notice_update: "Доступна версия MultiGamePlaytime {version}.",
-        button_update: "Обновить",
         toast_updated: "Обновлено до {version}",
         toast_updateFailed: "Не удалось обновить: {error}",
+        update_title: "Нужно обновление",
+        update_text: "Вышла версия {version}. MultiGamePlaytime на паузе, пока вы её не установите.",
+        button_install: "Установить последнюю версию",
+        button_later: "Позже",
+        update_downloading: "Загрузка… {percent}%",
+        update_installed: "Готово, плагин перезагружается",
+        status_updateRequired: "На паузе, нужна версия {version}",
     },
     "sv-SE": {
         set_active: "Simulera spel",
@@ -3118,12 +3283,15 @@ const labels = {
         toast_listEmpty: "Den här listan har inga spel än",
         toast_importInvalid: "Det här är ingen giltig MultiGamePlaytime-kod",
         toast_imported: "{n} spel har lagts till",
-        set_checkUpdates: "Sök efter uppdateringar",
-        note_checkUpdates: "Söker efter en ny version på GitHub och erbjuder installation med ett klick.",
-        notice_update: "MultiGamePlaytime {version} finns tillgänglig.",
-        button_update: "Uppdatera",
         toast_updated: "Uppdaterad till {version}",
         toast_updateFailed: "Uppdateringen misslyckades: {error}",
+        update_title: "Uppdatering krävs",
+        update_text: "Version {version} är ute. MultiGamePlaytime pausas tills du installerar den.",
+        button_install: "Installera senaste versionen",
+        button_later: "Senare",
+        update_downloading: "Laddar ner… {percent} %",
+        update_installed: "Klart, pluginet laddas om",
+        status_updateRequired: "Pausad, uppdatering till {version} krävs",
     },
     th: {
         set_active: "จำลองเกม",
@@ -3204,12 +3372,15 @@ const labels = {
         toast_listEmpty: "รายการนี้ยังไม่มีเกม",
         toast_importInvalid: "นี่ไม่ใช่โค้ด MultiGamePlaytime ที่ถูกต้อง",
         toast_imported: "เพิ่ม {n} เกมแล้ว",
-        set_checkUpdates: "ตรวจหาอัปเดต",
-        note_checkUpdates: "ค้นหาเวอร์ชันใหม่บน GitHub และเสนอให้ติดตั้งด้วยการคลิกเดียว",
-        notice_update: "MultiGamePlaytime {version} พร้อมใช้งานแล้ว",
-        button_update: "อัปเดต",
         toast_updated: "อัปเดตเป็น {version} แล้ว",
         toast_updateFailed: "อัปเดตไม่สำเร็จ: {error}",
+        update_title: "ต้องอัปเดต",
+        update_text: "เวอร์ชัน {version} ออกแล้ว MultiGamePlaytime จะหยุดพักจนกว่าคุณจะติดตั้ง",
+        button_install: "ติดตั้งเวอร์ชันล่าสุด",
+        button_later: "ภายหลัง",
+        update_downloading: "กำลังดาวน์โหลด… {percent}%",
+        update_installed: "เสร็จแล้ว กำลังโหลดปลั๊กอินใหม่",
+        status_updateRequired: "หยุดพัก ต้องอัปเดตเป็น {version}",
     },
     tr: {
         set_active: "Oyunları simüle et",
@@ -3290,12 +3461,15 @@ const labels = {
         toast_listEmpty: "Bu listede henüz oyun yok",
         toast_importInvalid: "Bu geçerli bir MultiGamePlaytime kodu değil",
         toast_imported: "{n} oyun eklendi",
-        set_checkUpdates: "Güncellemeleri denetle",
-        note_checkUpdates: "GitHub'da yeni sürüm arar ve tek tıkla yüklemeyi önerir.",
-        notice_update: "MultiGamePlaytime {version} kullanılabilir.",
-        button_update: "Güncelle",
         toast_updated: "{version} sürümüne güncellendi",
         toast_updateFailed: "Güncelleme başarısız: {error}",
+        update_title: "Güncelleme gerekli",
+        update_text: "{version} sürümü çıktı. Yükleyene kadar MultiGamePlaytime duraklatıldı.",
+        button_install: "En yeni sürümü yükle",
+        button_later: "Sonra",
+        update_downloading: "İndiriliyor… %{percent}",
+        update_installed: "Tamam, eklenti yeniden yükleniyor",
+        status_updateRequired: "Duraklatıldı, {version} sürümü gerekli",
     },
     uk: {
         set_active: "Симулювати ігри",
@@ -3376,12 +3550,15 @@ const labels = {
         toast_listEmpty: "У цьому списку ще немає ігор",
         toast_importInvalid: "Це не дійсний код MultiGamePlaytime",
         toast_imported: "Додано ігор: {n}",
-        set_checkUpdates: "Перевіряти оновлення",
-        note_checkUpdates: "Шукає нову версію на GitHub і пропонує встановити її одним клацанням.",
-        notice_update: "Доступна версія MultiGamePlaytime {version}.",
-        button_update: "Оновити",
         toast_updated: "Оновлено до {version}",
         toast_updateFailed: "Не вдалося оновити: {error}",
+        update_title: "Потрібне оновлення",
+        update_text: "Вийшла версія {version}. MultiGamePlaytime на паузі, доки ви її не встановите.",
+        button_install: "Встановити найновішу версію",
+        button_later: "Пізніше",
+        update_downloading: "Завантаження… {percent}%",
+        update_installed: "Готово, плагін перезавантажується",
+        status_updateRequired: "На паузі, потрібна версія {version}",
     },
     vi: {
         set_active: "Giả lập trò chơi",
@@ -3462,12 +3639,15 @@ const labels = {
         toast_listEmpty: "Danh sách này chưa có trò chơi nào",
         toast_importInvalid: "Đây không phải mã MultiGamePlaytime hợp lệ",
         toast_imported: "Đã thêm {n} trò chơi",
-        set_checkUpdates: "Kiểm tra cập nhật",
-        note_checkUpdates: "Tìm phiên bản mới trên GitHub và đề nghị cài đặt chỉ với một cú nhấp.",
-        notice_update: "MultiGamePlaytime {version} đã có.",
-        button_update: "Cập nhật",
         toast_updated: "Đã cập nhật lên {version}",
         toast_updateFailed: "Cập nhật thất bại: {error}",
+        update_title: "Cần cập nhật",
+        update_text: "Đã có phiên bản {version}. MultiGamePlaytime tạm dừng cho đến khi bạn cài đặt.",
+        button_install: "Cài phiên bản mới nhất",
+        button_later: "Để sau",
+        update_downloading: "Đang tải xuống… {percent}%",
+        update_installed: "Xong, đang tải lại plugin",
+        status_updateRequired: "Tạm dừng, cần bản {version}",
     },
     "zh-CN": {
         set_active: "模拟游戏",
@@ -3548,12 +3728,15 @@ const labels = {
         toast_listEmpty: "此列表还没有游戏",
         toast_importInvalid: "这不是有效的 MultiGamePlaytime 代码",
         toast_imported: "已添加 {n} 款游戏",
-        set_checkUpdates: "检查更新",
-        note_checkUpdates: "在 GitHub 上查找新版本，并提供一键安装。",
-        notice_update: "MultiGamePlaytime {version} 已可用。",
-        button_update: "更新",
         toast_updated: "已更新到 {version}",
         toast_updateFailed: "更新失败：{error}",
+        update_title: "需要更新",
+        update_text: "版本 {version} 已发布。安装之前 MultiGamePlaytime 会暂停。",
+        button_install: "安装最新版本",
+        button_later: "稍后",
+        update_downloading: "正在下载… {percent}%",
+        update_installed: "完成，正在重新加载插件",
+        status_updateRequired: "已暂停，需要更新到 {version}",
     },
     "zh-TW": {
         set_active: "模擬遊戲",
@@ -3634,11 +3817,14 @@ const labels = {
         toast_listEmpty: "此清單還沒有遊戲",
         toast_importInvalid: "這不是有效的 MultiGamePlaytime 代碼",
         toast_imported: "已新增 {n} 款遊戲",
-        set_checkUpdates: "檢查更新",
-        note_checkUpdates: "在 GitHub 上尋找新版本，並提供一鍵安裝。",
-        notice_update: "MultiGamePlaytime {version} 已推出。",
-        button_update: "更新",
         toast_updated: "已更新至 {version}",
         toast_updateFailed: "更新失敗：{error}",
+        update_title: "需要更新",
+        update_text: "版本 {version} 已推出。安裝之前 MultiGamePlaytime 會暫停。",
+        button_install: "安裝最新版本",
+        button_later: "稍後",
+        update_downloading: "正在下載… {percent}%",
+        update_installed: "完成，正在重新載入外掛",
+        status_updateRequired: "已暫停，需要更新至 {version}",
     },
 };

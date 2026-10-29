@@ -30,7 +30,7 @@ You can also edit the minutes of every game. When you raise the value, the plugi
 - Schedule: run only between two times you choose, also across midnight
 - A gamepad button next to mute and deafen turns it on and off; green means running, yellow means paused
 - Keeps running after a Discord restart
-- Tells you when there's a new version, one click installs it, and shows what's new afterwards
+- When a new version is out, a window asks you to install it and shows the download; the plugin pauses until you update, then shows what's new
 
 **Playtime**
 - Edit the minutes of every game; added minutes are reported to Discord and the "Playing" timer on your profile shows them
@@ -58,11 +58,11 @@ Bulgarian, Chinese (Simplified and Traditional), Croatian, Czech, Danish, Dutch,
 2. Put it into your BetterDiscord plugins folder (User Settings → Plugins → Open Plugins Folder)
 3. Enable it in User Settings → Plugins, open its settings, add games and turn on "Simulate games"
 
-From 1.4.0 on the plugin updates itself: a notice with an Update button shows up when a new version is out.
+From 1.5.0 on a window asks you to install new versions, with a download bar. Until you update, the plugin pauses.
 
 ## Privacy
 
-The plugin downloads Discord's public list of detectable games from cdn.discordapp.com when you open its settings, and the icon of each game in your list from discord.com and cdn.discordapp.com. The update check downloads the plugin file from this repository 10 seconds after start and every 6 hours; you can turn it off. It sends no data to anyone except Discord itself, and only the playtime reports described above. Your game list and statistics are stored in your BetterDiscord folder.
+The plugin downloads Discord's public list of detectable games from cdn.discordapp.com when you open its settings, and the icon of each game in your list from discord.com and cdn.discordapp.com. The update check downloads the plugin file from this repository 10 seconds after start and every 6 hours. It sends no data to anyone except Discord itself, and only the playtime reports described above. Your game list and statistics are stored in your BetterDiscord folder.
 
 ## License
 
